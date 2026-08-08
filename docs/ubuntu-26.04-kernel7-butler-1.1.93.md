@@ -7,8 +7,8 @@ Linux `7.0.0-29-generic`, x86-64, using the `aes67-daemon` branch.
 
 The v2.1 driver builds and loads on Linux 7.0.0-29, exposes the RAVENNA ALSA
 playback/capture device, receives PTP on the selected Ethernet interface, locks
-to the Grandmaster, and can be controlled by Merging Butler 1.1 build 93 after
-two compatibility adaptations described below.
+to the Grandmaster, and can be controlled by Merging Butler 1.1 build 93 after the
+compatibility adaptations described below.
 
 Validated observations included:
 
@@ -81,6 +81,87 @@ IEEE 1588 `offsetFromMaster`.
 
 For example, a displayed value of `406` corresponds to a maximum reported
 `clkJitter` of `406 us` (`0.406 ms`) during that reporting interval.
+
+### Legacy RTP stream creation ABI
+
+The ST 2022-7 driver update also changed the packed `TRTP_stream_info`
+structure used by `MT_ALSA_Msg_Add_RTPStream`. Driver v2.0+ inserted:
+
+```c
+bool m_bIsPrimaryPort;
+```
+
+immediately before `m_aui32Routing[]`.
+
+Because the structure is packed, this changes its size:
+
+| ABI | `TRTP_stream_info` size |
+| --- | ---: |
+| Butler 1.1.93 / pre-ST-2022-7 | 402 bytes |
+| driver v2.0+ / v2.1 | 403 bytes |
+
+Without compatibility translation, the current driver rejects the request
+before RTP stream creation and logs:
+
+```text
+Add RTP stream invalid data size
+```
+
+When `BUTLER_1193_COMPAT=1` is enabled, incoming legacy Add-RTP messages are
+intercepted before the normal v2.1 Netlink handler.
+
+The compatibility adapter:
+
+1. Accepts only the exact legacy 402-byte representation.
+2. Verifies the embedded legacy structure size.
+3. Copies the common packed prefix.
+4. Inserts the new `m_bIsPrimaryPort` field.
+5. Copies `m_aui32Routing[]` explicitly to its shifted v2.1 offset.
+6. Changes the embedded structure size to 403 bytes.
+7. Changes the Netlink payload size to 403 bytes.
+8. Calls the original v2.1 `nl_rx_msg()` implementation.
+
+The routing array must be copied explicitly. Reinterpreting the old 402-byte
+layout directly as the new 403-byte structure would shift and corrupt the
+routing entries after the inserted ST 2022-7 field.
+
+For the validated single-NIC configuration, legacy interface 0 is represented
+as the primary port. Butler 1.1.93 cannot express the complete ST 2022-7
+primary/secondary dual-interface semantics, so this compatibility mode must
+not be interpreted as full legacy-Butler ST 2022-7 support.
+
+The validated RTP TX source used:
+
+```text
+sample rate       48000 Hz
+codec             L24
+channels          2
+samples/packet    48
+packet period     1 ms
+payload type      98
+DSCP              34 (AF41)
+TTL               15
+multicast         239.1.0.252:5004
+```
+
+The observed packetisation was:
+
+```text
+48 samples * 2 channels * 3 bytes = 288 bytes audio
+12 bytes RTP header                =  12 bytes
+                                      ---------
+UDP payload                        = 300 bytes
+```
+
+Successive packets incremented the RTP sequence number by one and the RTP
+timestamp by 48 samples.
+
+With ALSA idle, the RTP source continued transmitting packets containing
+silence. During a 1 kHz `speaker-test`, the RTP payload contained non-zero L24
+audio samples while preserving the same packet size and RTP timing.
+
+This validates the tested ALSA -> driver -> PTP-paced RTP -> L24 network TX
+path. It is not intended as a complete AES67 conformance certification.
 
 ## 2. Patch the old Butler libcurl symbol version
 
