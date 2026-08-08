@@ -49,11 +49,38 @@ The legacy reply is mapped as follows:
 | --- | --- |
 | `nPTPLockStatus` | modern `nPTPLockStatus` |
 | `ui64GMID` | modern `ui64GMID[0]` |
-| `i32Jitter` | `0`, matching the original 1.1.93 implementation |
+| `i32Jitter` | modern `i32ClockJitter` (`m_maxClkJitter`), in microseconds |
 
 A normal build without `BUTLER_1193_COMPAT=1` retains the upstream v2.1
 36-byte ABI and remains suitable for software that understands the newer
-structure.
+structure. The legacy compatibility object is not compiled or linked in a
+normal build.
+
+### Legacy PTP jitter telemetry
+
+Butler 1.1.93 consumes the third field of its 16-byte PTP status structure as
+`Jitter`. The compatibility adapter maps this field to the v2.1
+`i32ClockJitter` statistic.
+
+The driver computes this value in microseconds. In `timerProcess()` the
+instantaneous value is calculated as the scheduled audio-frame TIC time minus
+the current clock time:
+
+```text
+clkJitter = scheduled_TIC_time - current_clock_time
+```
+
+`m_maxClkJitter` keeps the maximum positive value observed during the reporting
+interval. Because it is initialised/reset to zero and updated with `max()`,
+negative values are not retained. `GetPTPStatus()` publishes this statistic
+through `i32ClockJitter` and resets the maximum for the next interval.
+
+The legacy Butler web UI labels this series `Delta`. It should therefore be
+interpreted as the driver's TIC clock-jitter statistic, in microseconds, not as
+IEEE 1588 `offsetFromMaster`.
+
+For example, a displayed value of `406` corresponds to a maximum reported
+`clkJitter` of `406 us` (`0.406 ms`) during that reporting interval.
 
 ## 2. Patch the old Butler libcurl symbol version
 
