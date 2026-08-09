@@ -160,9 +160,11 @@ UDP payload                        = 300 bytes
 Successive packets incremented the RTP sequence number by one and the RTP
 timestamp by 48 samples.
 
-With ALSA idle, the RTP source continued transmitting packets containing
-silence. During a 1 kHz `speaker-test`, the RTP payload contained non-zero L24
-audio samples while preserving the same packet size and RTP timing.
+With the Butler RTP source enabled but no ALSA playback stream open, no RTP
+packets were transmitted. While a 1 kHz `speaker-test` playback stream was
+active, the source transmitted approximately 1000 RTP packets per second and
+the RTP payload contained non-zero L24 audio samples while preserving the
+expected packet size and RTP timing.
 
 This validates the tested ALSA -> driver -> PTP-paced RTP -> L24 network TX
 path. It is not intended as a complete AES67 conformance certification.
@@ -367,33 +369,68 @@ This confirms that the Butler 1.1.93 402-byte Add-RTP compatibility adapter is
 valid for both RTP Source and RTP Sink creation in the tested single-interface
 RAVENNA configuration.
 
-#### ALSA capture negotiation note
+#### ALSA period and buffer validation
 
-During the successful RX test, ALSA capture negotiated:
+The first successful physical RX test allowed ALSA to negotiate capture
+automatically and resulted in `period_size=384` while the RAVENNA PTP frame
+size was 48 samples. This was not a receive-path requirement.
+
+A subsequent test explicitly requested:
 
 ```text
 sample rate       48000
 channels          2
 format            S32_LE
-period_size       384
+period_size       48
+buffer_size       1536
+periods           32
 PTP frame size    48
-periods           62
 ```
 
-The driver reported:
+The driver accepted this geometry and physical RTP reception remained correct.
+At 48 kHz, the RTP packet, RAVENNA/PTP TIC and ALSA capture period were all
+aligned to 48 samples, or 1 ms.
 
 ```text
-periodSize (384) differs from ptp_frame_size (48)
-nbPeriods (62) differs from expected (1024)
-bufferSize (24000) differs from expected (2976)
+RTP packet         48 samples = 1 ms
+RAVENNA/PTP TIC    48 samples = 1 ms
+ALSA capture       48 samples = 1 ms
 ```
 
-These diagnostics did not prevent correct two-channel RTP reception or ALSA
-capture.
+The resulting capture contained:
 
-Period and buffer negotiation should therefore be investigated separately as
-an ALSA latency/configuration optimisation issue, rather than as a Butler
-1.1.93 ABI compatibility failure.
+```text
+bytes       = 3076224
+frames      = 384528
+
+CH1 nonzero = 143855
+CH1 peak    = 1721678592
+CH1 RMS     = 1217760616.4357195
+CH1 freq    = 1000.083 Hz
+
+CH2 nonzero = 192096
+CH2 peak    = 1721678592
+CH2 RMS     = 1217759931.304963
+CH2 freq    = 1000.083 Hz
+```
+
+Both channels therefore retained the expected 1 kHz programme content with
+the 48-sample ALSA period.
+
+This test also clarified two misleading legacy diagnostics in the ALSA driver.
+The values previously logged as `capture period size range: [96, 196608]` are
+byte counts (`period_bytes_min` and `period_bytes_max`), not frame counts. The
+diagnostic is now labelled `period byte range`.
+
+The former `nbPeriods (...) differs from expected (1024)` message compared the
+userspace ALSA buffer geometry with the complete internal RAVENNA ring buffer.
+The two buffers are independent: a 32-period ALSA capture buffer operated
+correctly while the internal RAVENNA ring remained 49152 frames.
+
+The diagnostic-only change does not alter ALSA constraints, PTP/TIC sizing,
+RTP processing, buffer operation or the Butler 1.1.93 compatibility adapter.
+Runtime logging now reports the negotiated ALSA geometry and RAVENNA geometry
+separately.
 
 #### Validation scope
 
