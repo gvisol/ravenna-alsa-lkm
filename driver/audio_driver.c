@@ -1626,7 +1626,9 @@ static int mr_alsa_audio_pcm_hw_params( struct snd_pcm_substream *substream,
         chip->mr_alsa_audio_ops->get_interrupts_frame_size(chip->ravenna_peer, &ptp_frame_size);
 
     if(periodSize != ptp_frame_size)
-        printk(KERN_WARNING "mr_alsa_audio_pcm_hw_params : periodSize (%u) differs from ptp_frame_size (%u)\n", periodSize, ptp_frame_size);
+        printk(KERN_DEBUG
+               "mr_alsa_audio_pcm_hw_params: ALSA period_size (%u) differs from RAVENNA PTP frame size (%u); this is supported\n",
+               periodSize, ptp_frame_size);
 
     if(substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
     {
@@ -1641,8 +1643,6 @@ static int mr_alsa_audio_pcm_hw_params( struct snd_pcm_substream *substream,
         /// while DSD in ALSA uses a continuous 8, 16 or 32 bit aligned stream with at 352k, 176k or 88k
         /// so respective ring buffers might have different scale and size
         chip->nb_playback_interrupts_per_period = ((dsd_mode != 0)? (MR_ALSA_PTP_FRAME_RATE_FOR_DSD / rate) : 1);
-        if(nbPeriods * ptp_frame_size * chip->nb_playback_interrupts_per_period != MR_ALSA_RINGBUFFER_NB_FRAMES)
-            printk(KERN_INFO "mr_alsa_audio_pcm_hw_params (playback): nbPeriods (%u) differs from expected (%u)\n", nbPeriods, MR_ALSA_RINGBUFFER_NB_FRAMES / (ptp_frame_size * chip->nb_playback_interrupts_per_period));
     }
     else if(substream->stream == SNDRV_PCM_STREAM_CAPTURE)
     {
@@ -1653,12 +1653,17 @@ static int mr_alsa_audio_pcm_hw_params( struct snd_pcm_substream *substream,
         /// while DSD in ALSA uses a continuous 8, 16 or 32 bit aligned stream with at 352k, 176k or 88k
         /// so respective ring buffers might have different scale and size
         chip->nb_capture_interrupts_per_period = ((dsd_mode != 0)? (MR_ALSA_PTP_FRAME_RATE_FOR_DSD / rate) : 1);
-        if(nbPeriods * chip->nb_capture_interrupts_per_period * ptp_frame_size != MR_ALSA_RINGBUFFER_NB_FRAMES)
-            printk(KERN_INFO "mr_alsa_audio_pcm_hw_params (capture): nbPeriods (%u) differs from expected (%u)\n", nbPeriods, MR_ALSA_RINGBUFFER_NB_FRAMES / (ptp_frame_size * chip->nb_capture_interrupts_per_period));
     }
 
-    if(bufferSize != nbPeriods * ptp_frame_size)
-        printk(KERN_INFO "mr_alsa_audio_pcm_hw_params : bufferSize (%u) differs from expected (%u)\n", bufferSize, nbPeriods * ptp_frame_size);
+    /*
+     * ALSA period/buffer geometry is negotiated with userspace and is
+     * independent from the size of the internal RAVENNA ring buffer.
+     * The ALSA buffer is not required to span MR_ALSA_RINGBUFFER_NB_FRAMES.
+     */
+    printk(KERN_DEBUG
+           "mr_alsa_audio_pcm_hw_params geometry: ALSA period_size=%u periods=%u buffer_size=%u; RAVENNA ptp_frame_size=%u ring_frames=%u\n",
+           periodSize, nbPeriods, bufferSize, ptp_frame_size,
+           MR_ALSA_RINGBUFFER_NB_FRAMES);
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
     err = snd_pcm_lib_alloc_vmalloc_buffer(substream, bufferBytes);
@@ -1944,7 +1949,7 @@ static int mr_alsa_audio_pcm_open(struct snd_pcm_substream *substream)
         mr_alsa_audio_pcm_hardware_playback.periods_min = periods_min;
         mr_alsa_audio_pcm_hardware_playback.periods_max = periods_max;
 
-        printk("mr_alsa_audio_pcm_open: playback period size range: [%zu, %zu], periods range: [%u, %u]\n",
+        printk("mr_alsa_audio_pcm_open: playback period byte range: [%zu, %zu], periods range: [%u, %u]\n",
               period_bytes_min, period_bytes_max, periods_min, periods_max);
 
         runtime->hw = mr_alsa_audio_pcm_hardware_playback;
@@ -2005,7 +2010,7 @@ static int mr_alsa_audio_pcm_open(struct snd_pcm_substream *substream)
         periods_min = 2;
         periods_max = MR_ALSA_RINGBUFFER_NB_FRAMES / maxPTPFrameSize;
 
-        printk("mr_alsa_audio_pcm_open: capture period size range: [%zu, %zu], periods range: [%u, %u]\n",
+        printk("mr_alsa_audio_pcm_open: capture period byte range: [%zu, %zu], periods range: [%u, %u]\n",
               period_bytes_min, period_bytes_max, periods_min, periods_max);
 
         mr_alsa_audio_pcm_hardware_capture.period_bytes_min = period_bytes_min;
