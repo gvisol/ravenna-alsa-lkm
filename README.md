@@ -176,6 +176,131 @@ The current tests do not yet establish:
 - exhaustive interoperability with independent third-party AES67/RAVENNA senders;
 - formal AES67 or RAVENNA conformance.
 
+## Portable deployment and validation milestones
+
+The repository root includes `ravenna_check_and_run.sh`, a portable
+pre-flight and launch helper for the validated Butler 1.1.93
+compatibility configuration.
+
+The launcher resolves the driver and Butler paths relative to the
+repository itself. It therefore does not depend on the username, home
+directory, clone directory, or the validation worktree used during
+development.
+
+Before launching Butler, the script:
+
+- selects or validates the RAVENNA/AES67 network interface;
+- creates the host-local Butler configuration from the versioned
+  `Butler/merging_ravenna_daemon.conf.example` template when necessary;
+- enforces the validated 48 kHz baseline with a 48-sample RAVENNA/PTP TIC;
+- writes the absolute `web_app_path` corresponding to the current clone;
+- verifies ALSA access for the current user;
+- verifies that the kernel module built in this repository contains the
+  Butler 1.1.93 compatibility shim;
+- refuses to continue if an already loaded `MergingRavennaALSA` module
+  cannot be verified as Butler-1.1.93 compatible;
+- checks that the loaded module exposes the RAVENNA ALSA card;
+- verifies Butler 1.1 build 93;
+- generates the `CURL_OPENSSL_4`-compatible Butler copy from the original
+  executable when the generated copy is absent;
+- avoids starting a duplicate Butler process.
+
+The driver is deliberately **not** compiled automatically by the launcher.
+Build it explicitly for the active kernel before first use:
+
+```bash
+cd driver
+make clean
+make -j"$(nproc)" BUTLER_1193_COMPAT=1
+cd ..
+```
+
+Then run:
+
+```bash
+./ravenna_check_and_run.sh
+```
+
+If the host has more than one active IPv4 interface and no valid local
+Butler configuration exists yet, the launcher asks which interface is the
+RAVENNA/AES67 interface instead of guessing.
+
+For unattended use the interface can be selected explicitly:
+
+```bash
+RAVENNA_INTERFACE=eno1 ./ravenna_check_and_run.sh
+```
+
+Replace `eno1` with the media interface on that host.
+
+### Versioned template versus host-local configuration
+
+The portable layout separates repository state from machine-specific
+runtime state:
+
+```text
+Butler/merging_ravenna_daemon.conf.example
+    versioned template
+
+Butler/merging_ravenna_daemon.conf
+    host-local runtime configuration
+    generated/updated by ravenna_check_and_run.sh
+    ignored by Git
+```
+
+The versioned template deliberately uses a minimal `key=value` format
+for compatibility with the legacy Butler parser:
+
+```ini
+interface_name=CHANGE_ME
+device_name=CHANGE_ME
+web_app_port=9090
+tic_frame_size_at_1fs=48
+config_pathname=/var/alsa-aes67-driver/butler.config
+default_sample_rate=48000
+```
+
+At runtime the launcher replaces `interface_name`, generates a default
+`device_name` from the host name when one has not already been configured,
+adds the absolute `web_app_path`, and keeps the validated 48-sample /
+48 kHz baseline. A user-supplied `device_name` is preserved.
+
+Generated kernel build products, patched Butler binaries, local Butler
+configuration, and local backup files are intentionally excluded from
+version control.
+
+### Validation tags
+
+Two annotated tags distinguish the validated compatibility baseline from
+the reproducible deployment package:
+
+- `v2.1-butler-1.1.93-validated` — validated Butler 1.1.93/current-driver
+  compatibility baseline before the portable deployment helper was added.
+- `v2.1-butler-1.1.93-portable` — reproducible deployment state containing
+  the portable launcher, host-local configuration layout, ignore rules,
+  and deployment documentation.
+
+After the portable tag is published, the exact deployment state can be
+recreated on another machine with:
+
+```bash
+git clone \
+  --branch v2.1-butler-1.1.93-portable \
+  https://github.com/gvisol/ravenna-alsa-lkm.git
+
+cd ravenna-alsa-lkm
+
+cd driver
+make clean
+make -j"$(nproc)" BUTLER_1193_COMPAT=1
+cd ..
+
+./ravenna_check_and_run.sh
+```
+
+The manual procedure below remains useful for diagnostics, development,
+and understanding each individual step.
+
 ## Build and run on Ubuntu 26.04 with Butler 1.1.93
 
 ### 1. Clone this branch
@@ -225,51 +350,103 @@ Do **not** replace the system libcurl and do **not** modify the original Butler 
 cd ../Butler
 python3 patch_curl_openssl4.py \
     Merging_RAVENNA_Daemon \
-    Merging_RAVENNA_Daemon.curl4
+    Merging_RAVENNA_Daemon.curl4-elf-test
 ```
 
-The original binary is left unchanged.
+The original binary is left unchanged. The generated
+`Merging_RAVENNA_Daemon.curl4-elf-test` file is a local runtime artifact
+and is ignored by Git. The portable launcher creates it automatically when
+it is missing.
 
 ### 4. Configure Butler
 
-`merging_ravenna_daemon.conf` provides the main runtime options. A typical AES67-oriented configuration includes:
+For portable deployments, do **not** version a machine-specific
+`Butler/merging_ravenna_daemon.conf`.
+
+The repository contains the versioned template:
+
+```text
+Butler/merging_ravenna_daemon.conf.example
+```
+
+The recommended launcher, `ravenna_check_and_run.sh`, creates the local
+`Butler/merging_ravenna_daemon.conf` from that template when it is absent.
+The local file is ignored by Git.
+
+When several active IPv4 interfaces are present, the launcher asks which
+one is dedicated to RAVENNA/AES67. The selection can also be supplied
+explicitly through `RAVENNA_INTERFACE`.
+
+The launcher then sets the validated baseline using a deliberately
+minimal `key=value` configuration:
 
 ```ini
-interface_name=eno1
-device_name=RAVENNA_host
+interface_name=<host RAVENNA interface>
+device_name=RAVENNA_<normalized-hostname>
 web_app_port=9090
-web_app_path=/absolute/path/to/ravenna-alsa-lkm/Butler/webapp/advanced
+web_app_path=<current clone>/Butler/webapp/advanced
 tic_frame_size_at_1fs=48
 config_pathname=/var/alsa-aes67-driver/butler.config
 default_sample_rate=48000
 ```
 
+If a host-local `device_name` already exists, the launcher preserves it.
+
 The important options are:
 
 - `interface_name`: Ethernet interface used for RAVENNA/AES67;
-- `device_name`: unique Zeroconf-visible device name; spaces are not recommended;
 - `web_app_port`: Butler web server TCP port, normally 9090;
-- `web_app_path`: absolute path to `Butler/webapp/advanced`;
+- `web_app_path`: absolute path to `Butler/webapp/advanced` in the current clone;
 - `tic_frame_size_at_1fs`: RAVENNA/PTP TIC size at 44.1/48 kHz; 48 samples is the validated AES67 value;
 - `config_pathname`: persistent Butler stream/configuration state;
-- `default_sample_rate`: initial audio sample rate.
+- `default_sample_rate`: initial audio sample rate, set to 48000 in the validated baseline.
+
+Additional Butler options may be added to the host-local configuration as
+required. Because that file is not tracked, machine-specific settings do
+not contaminate the portable repository state.
 
 ### 5. Launch Butler
 
+The recommended method is to return to the repository root and use the
+portable launcher:
+
 ```bash
-chmod u+x Merging_RAVENNA_Daemon.curl4
-sudo ./Merging_RAVENNA_Daemon.curl4
+cd ..
+./ravenna_check_and_run.sh
 ```
 
-Butler requires the RAVENNA kernel module to be loaded first. The module cannot be removed while Butler is using it.
+The launcher verifies the compatible driver, ALSA access, Butler version,
+host-local configuration and libcurl compatibility before starting Butler.
 
-The web UI is available on the configured media-interface address, for example:
+For manual diagnostics, Butler can still be patched and launched directly.
+Using the same generated filename as the portable launcher:
+
+```bash
+cd Butler
+python3 patch_curl_openssl4.py \
+    Merging_RAVENNA_Daemon \
+    Merging_RAVENNA_Daemon.curl4-elf-test
+
+chmod u+x Merging_RAVENNA_Daemon.curl4-elf-test
+sudo ./Merging_RAVENNA_Daemon.curl4-elf-test
+```
+
+Butler requires the RAVENNA kernel module to be loaded first. The module
+cannot be removed while Butler is using it.
+
+The web UI is available on the configured media-interface address, for
+example:
 
 ```text
 http://172.30.0.252:9090/
 ```
 
-The web server may bind only to `interface_name`; `127.0.0.1:9090` is therefore not necessarily reachable.
+The example address above is specific to the validated test host. On
+another machine use the IPv4 address assigned to its selected
+`interface_name`.
+
+The web server may bind only to `interface_name`; `127.0.0.1:9090` is
+therefore not necessarily reachable.
 
 ## License
 
@@ -374,6 +551,16 @@ arecord \
 The exact ALSA card index/name may differ between hosts.
 
 ## Troubleshooting
+
+### Butler process is running but TCP 9090 is not listening
+
+Verify that the host-local `Butler/merging_ravenna_daemon.conf` contains
+a valid `device_name` and uses the simple `key=value` layout generated by
+`ravenna_check_and_run.sh`. During validation, the known-good local
+configuration included both the selected RAVENNA interface and a unique
+device name, after which Butler completed initialization and exposed the
+web interface normally.
+
 
 ### Butler reports `Add RTP stream invalid data size`
 

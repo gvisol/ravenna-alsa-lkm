@@ -1,0 +1,6 @@
+interface_name=CHANGE_ME
+device_name=CHANGE_ME
+web_app_port=9090
+tic_frame_size_at_1fs=48
+config_pathname=/var/alsa-aes67-driver/butler.config
+default_sample_rate=48000
