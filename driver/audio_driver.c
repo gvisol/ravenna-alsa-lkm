@@ -662,6 +662,25 @@ static int mr_alsa_audio_pcm_interrupt(void *rawchip, int direction)
 
             bytes_to_frame_factor = runtime->channels * chip->current_alsa_capture_stride;
 
+            /*
+             * The live input jitter buffer is indexed by the absolute SAC.
+             * pcm_prepare() and the next PTP TIC are asynchronous, and the
+             * PTP servo may also re-align SAC by more than one TIC.  Therefore
+             * capture_buffer_pos must not free-run from the value sampled at
+             * prepare time: derive it again for every capture TIC so the
+             * samples copied below always correspond to the current SAC.
+             *
+             * This corrects the sample/timeline association.  It does not
+             * filter latency or alter the samples stored in the jitter buffer.
+             */
+            if (chip->mr_alsa_audio_ops->get_input_jitter_buffer_offset) {
+                uint32_t sac_buffer_pos = 0;
+
+                if (chip->mr_alsa_audio_ops->get_input_jitter_buffer_offset(
+                        chip->ravenna_peer, &sac_buffer_pos) == 0)
+                    chip->capture_buffer_pos = sac_buffer_pos;
+            }
+
             if (chip->capture_interleave_fn) {
                 chip->capture_interleave_fn(
                     chip->capture_buffer_channels_map,

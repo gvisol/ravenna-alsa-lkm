@@ -39,10 +39,38 @@ Validated observations include:
 - Two-channel L24 RTP transmission at 48 kHz and 48 samples/packet has been observed on the network.
 - Physical multicast ingress has been validated through the driver to two-channel `S32_LE` ALSA capture.
 - ALSA capture with `period_size=48` is valid and has been tested successfully with the 48-sample RAVENNA/PTP TIC.
+- ALSA capture now derives its jitter-buffer read position from an atomic SAC snapshot on every PTP TIC. This removes restart-dependent one-TIC latency states without filtering or altering received audio.
 - Legacy ALSA diagnostics were clarified so byte ranges and independent ALSA/RAVENNA buffer geometries are not presented as errors.
 - The missing Butler `network-started.png` web asset has been restored, fixing the broken Session Sink `Started` state icon.
 
 This establishes **functional compatibility for the tested configuration**. It is **not** a complete AES67 or RAVENNA conformance certification.
+
+### Repeatable capture latency across application restarts
+
+Previously, `pcm_prepare()` initialized the input jitter-buffer position from
+the current absolute sample counter (SAC), after which the position advanced
+independently. ALSA prepare and the next PTP TIC are asynchronous, and the PTP
+servo may re-align SAC, so the captured sample block could acquire a stable
+restart-dependent displacement of one TIC (1 ms at the validated 48-sample /
+48 kHz geometry).
+
+The capture interrupt now obtains SAC through the driver's existing atomic
+time snapshot and derives the jitter-buffer read position for every TIC. The
+callback also reports success when it returns a valid position. This is an
+index/timeline correction only: it performs no smoothing, outlier rejection,
+sample insertion/deletion, or latency compensation.
+
+Validation after installing the persistent PTP and Butler services used ten
+independent 20-second OnTimeCM starts. Per-run mean TL-TR values ranged from
+`12.373` to `12.496 ms`, a cross-run span of `0.122 ms`; their overall mean was
+`12.445 ms` and their population standard deviation was `0.041 ms`. Signal
+quality remained approximately `33 dB`.
+
+One start briefly selected an adjacent position exactly one 48-sample TIC
+away (`1168 -> 1120 -> 1168`) during acquisition. The analyzer cleared that
+transitional measurement window and did not publish it as a false stable
+latency. All settled runs retained the same latency state; this preserves real
+external latency tracking rather than filtering or pinning TL-TR.
 
 ### Butler 1.1.93 compatibility changes
 
@@ -219,6 +247,52 @@ Then run:
 
 ```bash
 ./ravenna_check_and_run.sh
+```
+
+### Persistent module and Butler service
+
+For a fixed production host, the repository also contains a reversible
+systemd installer. Build the exact driver first and then install it together
+with the patched Butler runtime:
+
+```bash
+cd driver
+make clean
+make -j"$(nproc)" BUTLER_1193_COMPAT=1
+cd ..
+
+sudo ./install-persistent.sh --iface eno1
+```
+
+This installs the module under
+`/lib/modules/$(uname -r)/updates/merging-ravenna/`, runs `depmod`, adds a
+`modules-load.d` entry, creates the CURL_OPENSSL_4 Butler copy under
+`/opt/merging-ravenna`, writes the host configuration under
+`/etc/merging-ravenna`, and enables `merging-ravenna-butler.service`.
+
+If the manually launched Butler and all ALSA clients are already stopped, the
+service can be activated immediately with `--now`. Otherwise, install without
+`--now` and let the new module/service become active on the next reboot.
+
+```bash
+systemctl status merging-ravenna-butler.service
+journalctl -u merging-ravenna-butler.service
+```
+
+The unit is ordered after `network-online.target` and, when installed, after
+`ontime-ptp-sync.service`. This ordering does not couple the two PTP servos:
+RAVENNA continues using its own PTP/SAC timeline, while linuxptp disciplines
+the Linux clocks used by OnTimeCM.
+
+Kernel modules are kernel-release specific. After installing a new kernel,
+rebuild the driver against its headers and rerun `install-persistent.sh` before
+booting that kernel into production.
+
+Rollback is explicit and does not unload an in-use kernel module:
+
+```bash
+sudo /usr/local/sbin/uninstall-merging-ravenna
+sudo reboot
 ```
 
 If the host has more than one active IPv4 interface and no valid local
