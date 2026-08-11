@@ -60,10 +60,17 @@ callback also reports success when it returns a valid position. This is an
 index/timeline correction only: it performs no smoothing, outlier rejection,
 sample insertion/deletion, or latency compensation.
 
-Validation with ten independent 20-second OnTimeCM starts produced per-run
-mean TL-TR values from `12.430` to `12.525 ms`, a cross-run span of `0.095 ms`,
-with no offset change inside any run. Signal quality remained approximately
-`33.2 dB`.
+Validation after installing the persistent PTP and Butler services used ten
+independent 20-second OnTimeCM starts. Per-run mean TL-TR values ranged from
+`12.373` to `12.496 ms`, a cross-run span of `0.122 ms`; their overall mean was
+`12.445 ms` and their population standard deviation was `0.041 ms`. Signal
+quality remained approximately `33 dB`.
+
+One start briefly selected an adjacent position exactly one 48-sample TIC
+away (`1168 -> 1120 -> 1168`) during acquisition. The analyzer cleared that
+transitional measurement window and did not publish it as a false stable
+latency. All settled runs retained the same latency state; this preserves real
+external latency tracking rather than filtering or pinning TL-TR.
 
 ### Butler 1.1.93 compatibility changes
 
