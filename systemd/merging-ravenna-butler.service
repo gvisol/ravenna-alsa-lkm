@@ -1,0 +1,17 @@
+[Unit]
+Description=Merging RAVENNA/AES67 Butler 1.1.93
+Wants=network-online.target sound.target
+After=network-online.target sound.target systemd-modules-load.service ontime-ptp-sync.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/merging-ravenna/Butler
+ExecStartPre=/sbin/modprobe MergingRavennaALSA
+ExecStart=/opt/merging-ravenna/Butler/Merging_RAVENNA_Daemon.curl4
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
