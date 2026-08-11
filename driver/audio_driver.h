@@ -66,6 +66,19 @@ struct alsa_ops
     int (*get_min_interrupts_frame_size)(void* ravenna_peer, uint32_t *framesize); /// returns min Ravenna Frame Size in samples (channel independent)
     int (*get_max_interrupts_frame_size)(void* ravenna_peer, uint32_t *framesize); /// returns max Ravenna Frame Size (hardware dependent) in samples (channel independent)
     int (*get_interrupts_frame_size)(void* ravenna_peer, uint32_t *framesize); /// returns current Ravenna Frame Size in samples (channel independent)
+    /* PTP-phase-locked SAC, local timer and servo state latched for this TIC;
+       diagnostics only. */
+    void (*get_global_times)(void* ravenna_peer, uint64_t *sac,
+                             uint64_t *monotonic_time_100us,
+                             uint64_t *performance_counter,
+                             int64_t *ptp_to_monotonic_offset_100us,
+                             uint64_t *tic_base_period_ps,
+                             uint64_t *tic_current_period_ps,
+                             uint16_t *ptp_lock_pending,
+                             uint16_t *tic_lock_pending,
+                             uint64_t *last_sync_rx_hardware_timestamp_ns,
+                             uint64_t *last_sync_rx_monotonic_timestamp_ns,
+                             uint64_t *last_sync_origin_timestamp_ns);
     int (*set_sample_rate)(void* ravenna_peer, uint32_t rate);  /// rate: use PCM rates values or raw DSD sample rates values. stop_interrupts() should be called prior sample rate changes.
                                                                 ///  this function is not atomic and caller must be schedulable
     int (*get_sample_rate)(void* ravenna_peer, uint32_t *rate); /// returns current Ravenna sample rate (actual PCM rate or actual DSD rate)

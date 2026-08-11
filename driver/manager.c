@@ -644,13 +644,16 @@ bool IsIOStarted(struct TManager* self)
 }
 
 //////////////////////////////////////////////////////////////////////////////////
-int EtherTubeRxPacket(struct TManager* self, void* packet, int packet_size, const char* ifname, int mac_header)
+int EtherTubeRxPacket(struct TManager* self, void* packet, int packet_size,
+                      const char* ifname, int mac_header,
+                      uint64_t rx_hwtstamp_ns)
 {
     int i = 0;
     int ret = 1;
     for (i = 0; i < _MAX_NICS; i++)
     {
-        ret &= rx_packet(&self->m_EthernetFilter[i], packet, packet_size, ifname, mac_header);
+        ret &= rx_packet(&self->m_EthernetFilter[i], packet, packet_size,
+                         ifname, mac_header, rx_hwtstamp_ns);
     }
     return ret;
 }
@@ -1240,7 +1243,9 @@ uint32_t GetIPAddress(void* user)
 // CEtherTubeAdviseSink
 //////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////
-EDispatchResult DispatchPacket(struct TManager* self, void* pBuffer, uint32_t packetsize, int mac_header, unsigned char nicId)
+EDispatchResult DispatchPacket(struct TManager* self, void* pBuffer,
+                               uint32_t packetsize, int mac_header,
+                               unsigned char nicId, uint64_t rx_hwtstamp_ns)
 {
     EDispatchResult nDispatchResult = DR_PACKET_NOT_USED;
     TUDPPacketBase* pUDPPacketBase = (TUDPPacketBase*)pBuffer;
@@ -1265,7 +1270,9 @@ EDispatchResult DispatchPacket(struct TManager* self, void* pBuffer, uint32_t pa
     {
         if (self->m_Is_NIC_Active[nicId])
         {
-            nDispatchResult = process_PTP_packet(&self->m_PTP[nicId], pUDPPacketBase, packetsize);
+            nDispatchResult = process_PTP_packet(&self->m_PTP[nicId],
+                                                  pUDPPacketBase, packetsize,
+                                                  rx_hwtstamp_ns);
             if (nDispatchResult == DR_PACKET_NOT_USED)
             {
                 nDispatchResult = process_UDP_packet(&self->m_RTP_streams_manager, nicId, pUDPPacketBase, packetsize);
@@ -1792,6 +1799,33 @@ int get_interrupts_frame_size(void* user, uint32_t *framesize)
     return -EINVAL;
 }
 
+/* SAC is PTP-phase-locked; its associated timestamp is CLOCK_MONOTONIC.
+ * The servo fields are diagnostic data only and are intentionally sampled
+ * separately from that tic snapshot. */
+void get_alsa_capture_global_times(void* user, uint64_t *sac,
+                                   uint64_t *monotonic_time_100us,
+                                   uint64_t *performance_counter,
+                                   int64_t *ptp_to_monotonic_offset_100us,
+                                   uint64_t *tic_base_period_ps,
+                                   uint64_t *tic_current_period_ps,
+                                   uint16_t *ptp_lock_pending,
+                                   uint16_t *tic_lock_pending,
+                                   uint64_t *last_sync_rx_hardware_timestamp_ns,
+                                   uint64_t *last_sync_rx_monotonic_timestamp_ns,
+                                   uint64_t *last_sync_origin_timestamp_ns)
+{
+    struct TManager* self = (struct TManager*)user;
+    TClock_PTP* ptp = &self->m_PTP[self->m_Active_PTP_NIC_Idx];
+
+    get_ptp_global_times(ptp, sac, monotonic_time_100us, performance_counter);
+    get_ptp_timing_diagnostics(ptp, ptp_to_monotonic_offset_100us,
+                               tic_base_period_ps, tic_current_period_ps,
+                               ptp_lock_pending, tic_lock_pending,
+                               last_sync_rx_hardware_timestamp_ns,
+                               last_sync_rx_monotonic_timestamp_ns,
+                               last_sync_origin_timestamp_ns);
+}
+
 int start_interrupts(void* user, bool is_playback)
 {
     struct TManager* self = (struct TManager*)user;
@@ -1957,6 +1991,7 @@ void init_alsa_callbacks(struct TManager* self)
     self->m_alsa_callbacks.get_min_interrupts_frame_size = &get_min_interrupts_frame_size;
     self->m_alsa_callbacks.get_max_interrupts_frame_size = &get_max_interrupts_frame_size;
     self->m_alsa_callbacks.get_interrupts_frame_size = &get_interrupts_frame_size;
+    self->m_alsa_callbacks.get_global_times = &get_alsa_capture_global_times;
     self->m_alsa_callbacks.set_sample_rate = &set_sample_rate;
     self->m_alsa_callbacks.get_sample_rate = &get_sample_rate;
     self->m_alsa_callbacks.get_jitter_buffer_sample_bytelength = &get_jitter_buffer_sample_bytelength;

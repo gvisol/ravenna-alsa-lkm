@@ -44,7 +44,7 @@ typedef struct
     TEtherTubeNetfilter *m_pEth_netfilter;
 
     uint64_t m_ui64GlobalSAC; // this variable will not change during AudioFrameTIC()
-    uint64_t m_ui64GlobalTime; // [100ns] this variable will not change during AudioFrameTIC()
+    uint64_t m_ui64GlobalTime; // [100us] this variable will not change during AudioFrameTIC()
     uint64_t m_ui64GlobalPerformanceCounter; // see MTAL_QueryPerformanceCounter()
     uint32_t m_ui32FrameSize;
     uint32_t m_ui32SamplingRate;
@@ -132,6 +132,10 @@ typedef struct
     
     uint64_t m_ui64PTPMaster_ClockIdentity;
     uint64_t m_ui64PTPMaster_GMID;
+    /* Read-only RX timestamp telemetry for the most recent accepted Sync. */
+    uint64_t m_ui64LastSyncRxHardwareTimestampNs;
+    uint64_t m_ui64LastSyncRxMonotonicTimestampNs;
+    uint64_t m_ui64LastSyncOriginTimestampNs;
     //######################################################
 
 } TClock_PTP;
@@ -144,6 +148,15 @@ extern "C"
 #endif // defined(__cplusplus) f10b pourra etre retire  +extern quand le port C sera termine
 
  void get_ptp_global_times(TClock_PTP* self, uint64_t* pui64GlobalSAC, uint64_t* pui64GlobalTime, uint64_t* pui64GlobalPerformanceCounter); // get the time and the SAC atomically
+ void get_ptp_timing_diagnostics(TClock_PTP* self,
+                                 int64_t* ptp_to_monotonic_offset_100us,
+                                 uint64_t* tic_base_period_ps,
+                                 uint64_t* tic_current_period_ps,
+                                 uint16_t* ptp_lock_pending,
+                                 uint16_t* tic_lock_pending,
+                                 uint64_t* last_sync_rx_hardware_timestamp_ns,
+                                 uint64_t* last_sync_rx_monotonic_timestamp_ns,
+                                 uint64_t* last_sync_origin_timestamp_ns);
 
 //static uint32_t get_FS(uint32_t ui32SamplingRate);
 //static uint32_t get_samplerate_base(uint32_t ui32SamplingRate);
@@ -153,7 +166,10 @@ extern "C"
 
  void SetPTPMasterPortNumber(TClock_PTP* self, uint16_t usPTPMasterPortNumber);
 
- EDispatchResult process_PTP_packet(TClock_PTP* self, TUDPPacketBase* pUDPPacketBase, uint32_t ui32PacketSize);
+ EDispatchResult process_PTP_packet(TClock_PTP* self,
+                                    TUDPPacketBase* pUDPPacketBase,
+                                    uint32_t ui32PacketSize,
+                                    uint64_t rx_hwtstamp_ns);
 
  bool StartAudioFrameTICTimer(TClock_PTP* self, uint32_t ui32FrameSize, uint32_t ui32SamplingRate);
  bool StopAudioFrameTICTimer(TClock_PTP* self);

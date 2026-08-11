@@ -133,7 +133,9 @@ bool IsStarted(struct TManager* self);
 bool IsIOStarted(struct TManager* self);
 
 // Netfilter
-int EtherTubeRxPacket(struct TManager* self, void* packet, int packet_size, const char* ifname, int mac_header);
+int EtherTubeRxPacket(struct TManager* self, void* packet, int packet_size,
+                      const char* ifname, int mac_header,
+                      uint64_t rx_hwtstamp_ns);
 void EtherTubeHookFct(struct TManager* self, void* hook_fct, void* hook_struct);
 
 // Messaging
@@ -160,7 +162,9 @@ void AudioFrameTIC(void* user);
 //static void AudioFrameTIC_(void* self) { return ((CManager*)self)->AudioFrameTIC(); }
 //static uint32_t GetIPAddress_(void* self) { return ((CManager*)self)->GetIPAddress(); }
 // CEtherTubeAdviseSink
-EDispatchResult DispatchPacket(struct TManager* self, void* pBuffer, uint32_t packetsize, int mac_header, unsigned char nicId);
+EDispatchResult DispatchPacket(struct TManager* self, void* pBuffer,
+                               uint32_t packetsize, int mac_header,
+                               unsigned char nicId, uint64_t rx_hwtstamp_ns);
 
 //////////////////////////////////////
 // Ex-CRTP_audio_stream_callback was defined in RTP_audio_stream.hpp
@@ -193,6 +197,17 @@ int get_output_jitter_buffer_offset(void* user, uint32_t *offset);
 int get_min_interrupts_frame_size(void* user, uint32_t *framesize);
 int get_max_interrupts_frame_size(void* user, uint32_t *framesize);
 int get_interrupts_frame_size(void* user, uint32_t *framesize); // ALSA PCM period size must be a multiple of this framesize
+void get_alsa_capture_global_times(void* user, uint64_t *sac,
+                                   uint64_t *monotonic_time_100us,
+                                   uint64_t *performance_counter,
+                                   int64_t *ptp_to_monotonic_offset_100us,
+                                   uint64_t *tic_base_period_ps,
+                                   uint64_t *tic_current_period_ps,
+                                   uint16_t *ptp_lock_pending,
+                                   uint16_t *tic_lock_pending,
+                                   uint64_t *last_sync_rx_hardware_timestamp_ns,
+                                   uint64_t *last_sync_rx_monotonic_timestamp_ns,
+                                   uint64_t *last_sync_origin_timestamp_ns);
 int set_sample_rate(void* user, uint32_t rate);
 int get_sample_rate(void* user, uint32_t *rate);
 int get_jitter_buffer_sample_bytelength(void* user, char *byte_len);
@@ -223,4 +238,3 @@ enum eAudioMode GetAudioModeFromRate(const uint32_t sample_rate);
 #elif defined(MT_RAMP_TEST)
     int32_t m_ramp_test_phase;
 #endif // MT_TONE_TEST
-

@@ -50,7 +50,8 @@ extern void nl_rx_msg(void* rx_msg);
 extern void nf_start(void);
 extern void nf_stop(void);
 
-extern int nf_rx_packet(void* packet, int packet_size, const char* ifname, int mac_header);
+extern int nf_rx_packet(void* packet, int packet_size, const char* ifname,
+                        int mac_header, uint64_t rx_hwtstamp_ns);
 extern void nf_hook_fct(void* hook_fct, void* hook_struct);
 
 extern void t_clock_timer(void* next, uint64_t now);

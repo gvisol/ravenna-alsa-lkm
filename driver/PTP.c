@@ -35,6 +35,7 @@
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/slab.h>
+#include <linux/timekeeping.h>
 
 #include "c_wrapper_lib.h" //f10b use for module... to define into that file
 
@@ -66,6 +67,48 @@ void get_ptp_global_times(TClock_PTP* self, uint64_t* pui64GlobalSAC, uint64_t* 
     *pui64GlobalPerformanceCounter = self->m_ui64GlobalPerformanceCounter;
 
     spin_unlock((spinlock_t*)self->m_csSAC_Time_Lock);
+}
+
+/*
+ * Servo state for read-only timing diagnostics.  This deliberately takes a
+ * separate PTP lock from get_ptp_global_times(): its fields are updated by
+ * Sync/Follow_Up processing while GlobalSAC is latched at the audio tic.
+ * Combining both in a single synthetic timestamp would falsely imply a
+ * stronger atomicity than the driver actually provides.
+ */
+void get_ptp_timing_diagnostics(TClock_PTP* self,
+                                int64_t* ptp_to_monotonic_offset_100us,
+                                uint64_t* tic_base_period_ps,
+                                uint64_t* tic_current_period_ps,
+                                uint16_t* ptp_lock_pending,
+                                uint16_t* tic_lock_pending,
+                                uint64_t* last_sync_rx_hardware_timestamp_ns,
+                                uint64_t* last_sync_rx_monotonic_timestamp_ns,
+                                uint64_t* last_sync_origin_timestamp_ns)
+{
+    if (!self)
+        return;
+
+    spin_lock((spinlock_t*)self->m_csPTPTime);
+    if (ptp_to_monotonic_offset_100us)
+        *ptp_to_monotonic_offset_100us = self->m_i64TIC_PTPToRTXClockOffset;
+    if (tic_base_period_ps)
+        *tic_base_period_ps = self->m_dTIC_BasePeriod;
+    if (tic_current_period_ps)
+        *tic_current_period_ps = self->m_dTIC_CurrentPeriod;
+    if (ptp_lock_pending)
+        *ptp_lock_pending = self->m_usPTPLockCounter;
+    if (tic_lock_pending)
+        *tic_lock_pending = self->m_usTICLockCounter;
+    if (last_sync_rx_hardware_timestamp_ns)
+        *last_sync_rx_hardware_timestamp_ns =
+            self->m_ui64LastSyncRxHardwareTimestampNs;
+    if (last_sync_rx_monotonic_timestamp_ns)
+        *last_sync_rx_monotonic_timestamp_ns =
+            self->m_ui64LastSyncRxMonotonicTimestampNs;
+    if (last_sync_origin_timestamp_ns)
+        *last_sync_origin_timestamp_ns = self->m_ui64LastSyncOriginTimestampNs;
+    spin_unlock((spinlock_t*)self->m_csPTPTime);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -159,6 +202,9 @@ bool init_ptp(TClock_PTP* self, TEtherTubeNetfilter* pEth_netfilter, clock_ptp_o
 	// PTP info
 	self->m_ui64PTP_GMID = 0;
 	self->m_ui8PTPClockDomain = 0;
+	self->m_ui64LastSyncRxHardwareTimestampNs = 0;
+	self->m_ui64LastSyncRxMonotonicTimestampNs = 0;
+	self->m_ui64LastSyncOriginTimestampNs = 0;
 
     //////////////
 	self->m_pEth_netfilter = pEth_netfilter;
@@ -226,7 +272,10 @@ void SetPTPMasterPortNumber(TClock_PTP* self, unsigned short const usPTPMasterPo
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-EDispatchResult process_PTP_packet(TClock_PTP* self, TUDPPacketBase* pUDPPacketBase, uint32_t ui32PacketSize)
+EDispatchResult process_PTP_packet(TClock_PTP* self,
+                                   TUDPPacketBase* pUDPPacketBase,
+                                   uint32_t ui32PacketSize,
+                                   uint64_t rx_hwtstamp_ns)
 {
     TPTPPacketBase* pPTPPacketBase = (TPTPPacketBase*)pUDPPacketBase;
 	if(!self->m_bInitialized || !self->m_bAudioFrameTICTimerStarted)
@@ -397,7 +446,11 @@ EDispatchResult process_PTP_packet(TClock_PTP* self, TUDPPacketBase* pUDPPacketB
             //######################################################
 
 			get_clock_time(&ui64T2); // retrieve the packet arrival time (RTX clock domain).
-			ui64T2 /= NS_2_REF_UNIT; // [100ns]
+			spin_lock((spinlock_t*)self->m_csPTPTime);
+			self->m_ui64LastSyncRxHardwareTimestampNs = rx_hwtstamp_ns;
+			self->m_ui64LastSyncRxMonotonicTimestampNs = ui64T2;
+			spin_unlock((spinlock_t*)self->m_csPTPTime);
+			ui64T2 /= NS_2_REF_UNIT; // [100us]
 			/*if(!GetPTPTimeStamp(self->m_pEth_netfilter, &ui64T2)) // [100ns]	// retrieve the packet arrival time (RTX clock domain).
 			{
 				MTAL_DP("[%u] GetPTPTimeStamp failed\n", self->m_pEth_netfilter->nic_id);
@@ -440,7 +493,7 @@ EDispatchResult process_PTP_packet(TClock_PTP* self, TUDPPacketBase* pUDPPacketB
 																																																			   // Correction field
 					int64_t i64Correction = MTAL_SWAP64(pPTPV2MsgSyncPacket->V2MsgHeader.i64CorrectionField) >> 16;
 					ui64T1 += i64Correction;
-					ui64T1 /= NS_2_REF_UNIT; // [100ns]
+					ui64T1 /= NS_2_REF_UNIT; // [100us]
 
 					ProcessT1(self, ui64T1);
 				}
@@ -475,7 +528,7 @@ EDispatchResult process_PTP_packet(TClock_PTP* self, TUDPPacketBase* pUDPPacketB
                 // Correction field
                 int64_t i64Correction = MTAL_SWAP64(pPTPV2MsgFollowUpPacket->V2MsgHeader.i64CorrectionField) >> 16;
                 ui64T1 += i64Correction;
-                ui64T1 /= NS_2_REF_UNIT; // [100ns]
+                ui64T1 /= NS_2_REF_UNIT; // [100us]
 
 
                 if(MTAL_SWAP16(pPTPV2MsgFollowUpPacket->V2MsgHeader.wSequenceId) == self->m_wLastSyncSequenceId) // we verify that this follow up match the last sync packet received.
@@ -536,8 +589,9 @@ void ProcessT1(TClock_PTP* self, uint64_t ui64T1)
 	MTAL_DP("ui64DeltaT1 = %llu [100ns] > 0.5ms; Seq = %u\n", ui64DeltaT1, MTAL_SWAP16(pPTPV2MsgFollowUpPacket->V2MsgHeader.wSequenceId));
 	}*/
 	// Atomicity
-	{
+    {
         spin_lock((spinlock_t*)self->m_csPTPTime);
+		self->m_ui64LastSyncOriginTimestampNs = ui64T1 * NS_2_REF_UNIT;
 		if (self->m_usPTPLockCounter > 0)
 		{
 			self->m_usPTPLockCounter--;
@@ -839,11 +893,105 @@ void timerSetNextAbsoluteTime(TClock_PTP* self, uint64_t ui64NextAbsoluteTime)
 	spin_unlock/*_irqrestore*/((spinlock_t*)self->m_csPTPTime/*, flags*/);
 }
 
+/*
+ * OntimeSync defines an absolute audio sample as floor(CLOCK_TAI * Fs).
+ * Keep the multiply bounded by splitting at whole seconds: a direct
+ * tai_ns * sample_rate multiplication would overflow on current dates.
+ */
+static uint64_t tai_ns_to_absolute_sample(uint64_t tai_ns, uint32_t sample_rate)
+{
+    const uint64_t whole_seconds = tai_ns / 1000000000ULL;
+    const uint64_t remaining_ns = tai_ns % 1000000000ULL;
+
+    return whole_seconds * sample_rate +
+        (remaining_ns * sample_rate) / 1000000000ULL;
+}
+
+static uint64_t absolute_sample_to_tai_ns(uint64_t sample, uint32_t sample_rate)
+{
+    const uint64_t whole_seconds = sample / sample_rate;
+    const uint64_t remaining_samples = sample % sample_rate;
+
+    return whole_seconds * 1000000000ULL +
+        (remaining_samples * 1000000000ULL) / sample_rate;
+}
+
+/*
+ * Opt-in alternate timing source.  CLOCK_TAI is already disciplined from the
+ * same PHC by ptp4l/phc2sys on the target host, and is the authority used by
+ * OntimeSync.  This does not alter decoded samples or analyzer reporting: it
+ * changes only the driver's actual tic/SAC timeline.
+ */
+static bool timerProcessSystemTai(TClock_PTP* self,
+                                  uint64_t* pui64NextRTXClockTime)
+{
+    uint64_t monotonic_before_ns;
+    uint64_t monotonic_after_ns;
+    uint64_t monotonic_now_ns;
+    uint64_t tai_now_ns;
+    uint64_t current_sample;
+    uint64_t current_frame;
+    uint64_t next_sample;
+    uint64_t next_tai_ns;
+    uint64_t next_monotonic_ns;
+    uint64_t current_tic_count;
+
+    if (!ravenna_system_tai_timeline_enabled() || !self ||
+        !self->m_bAudioFrameTICTimerStarted || self->m_ui32FrameSize == 0 ||
+        self->m_ui32SamplingRate == 0)
+        return false;
+
+    /* Project the TAI observation into the monotonic hrtimer domain. */
+    get_clock_time(&monotonic_before_ns);
+    tai_now_ns = ktime_get_clocktai_ns();
+    get_clock_time(&monotonic_after_ns);
+    monotonic_now_ns = monotonic_before_ns +
+        (monotonic_after_ns - monotonic_before_ns) / 2;
+
+    current_sample = tai_ns_to_absolute_sample(tai_now_ns,
+                                                self->m_ui32SamplingRate);
+    current_frame = current_sample / self->m_ui32FrameSize;
+    current_tic_count = current_frame + 1;
+    next_sample = current_tic_count * self->m_ui32FrameSize;
+    next_tai_ns = absolute_sample_to_tai_ns(next_sample,
+                                             self->m_ui32SamplingRate);
+
+    /* A rounded fractional sample can only put us at the boundary; advance. */
+    if (next_tai_ns <= tai_now_ns) {
+        next_sample += self->m_ui32FrameSize;
+        ++current_tic_count;
+        next_tai_ns = absolute_sample_to_tai_ns(next_sample,
+                                                 self->m_ui32SamplingRate);
+    }
+    next_monotonic_ns = monotonic_now_ns + (next_tai_ns - tai_now_ns);
+
+    spin_lock((spinlock_t*)self->m_csPTPTime);
+    self->m_ui64TIC_LastRTXClockTime = monotonic_now_ns / NS_2_REF_UNIT;
+    self->m_ui64TIC_NextAbsoluteTime = next_monotonic_ns / NS_2_REF_UNIT;
+    spin_unlock((spinlock_t*)self->m_csPTPTime);
+
+    self->m_ui64TICSAC = (current_tic_count - 1) * self->m_ui32FrameSize;
+    spin_lock((spinlock_t*)self->m_csSAC_Time_Lock);
+    self->m_ui64GlobalPerformanceCounter = MTAL_LK_GetCounterTime();
+    self->m_ui64GlobalTime = monotonic_now_ns / NS_2_REF_UNIT;
+    self->m_ui64GlobalSAC = self->m_ui64TICSAC;
+    spin_unlock((spinlock_t*)self->m_csSAC_Time_Lock);
+
+    self->m_ui64LastTIC_Count = current_tic_count;
+    *pui64NextRTXClockTime = next_monotonic_ns;
+    return true;
+}
+
 void timerProcess(TClock_PTP* self, uint64_t* pui64NextRTXClockTime, uint64_t ui64RTXClockTime)
 {
 	// debug
 	//int iTICCountUpdateMethod = 0;
 	int32_t clkJitter;
+
+	if (timerProcessSystemTai(self, pui64NextRTXClockTime))
+	{
+		return;
+	}
 
 	// Set the timer to the next Frame
 	uint64_t ui64AbsoluteTime;

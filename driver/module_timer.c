@@ -44,6 +44,21 @@ static int audio_cpu_affinity = -1; /* -1 means no CPU pinning (any CPU) */
 module_param(audio_cpu_affinity, int, 0444);
 MODULE_PARM_DESC(audio_cpu_affinity, "CPU core to pin the hrtimer to (-1 for any CPU, default -1)");
 
+/*
+ * This is deliberately load-time-only.  Switching an active audio timeline
+ * would create a discontinuity in SAC, so an A/B run must start from a fresh
+ * module load.
+ */
+static bool use_system_tai_timeline;
+module_param(use_system_tai_timeline, bool, 0444);
+MODULE_PARM_DESC(use_system_tai_timeline,
+    "Experimental: derive audio frame timeline from host CLOCK_TAI (default false)");
+
+bool ravenna_system_tai_timeline_enabled(void)
+{
+    return READ_ONCE(use_system_tai_timeline);
+}
+
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5,0,0) && LINUX_VERSION_CODE < KERNEL_VERSION(6,15,0)
 

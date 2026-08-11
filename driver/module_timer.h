@@ -46,6 +46,14 @@ extern void stop_clock_timer(void);
 
 extern void get_clock_time(uint64_t* clock_time);
 
+/*
+ * Experimental, opt-in timeline source.  When enabled at module load with
+ * use_system_tai_timeline=1, PTP.c derives audio frame boundaries from the
+ * host CLOCK_TAI rather than the driver's software packet-arrival PTP servo.
+ * The default is false and preserves the vendor behaviour.
+ */
+extern bool ravenna_system_tai_timeline_enabled(void);
+
 extern void set_base_period(uint64_t base_period);
 extern void update_base_period(uint32_t tic_frame_size, uint32_t sample_rate);
 

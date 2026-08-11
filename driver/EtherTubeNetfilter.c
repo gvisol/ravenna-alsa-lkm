@@ -243,7 +243,8 @@ void netfilter_hook_fct(TEtherTubeNetfilter* self, void* nf_hook_fct, void* nf_h
     self->nf_hook_struct_ = nf_hook_struct;
 }
 
-int rx_packet(TEtherTubeNetfilter* self, void* packet, int packet_size, const char* ifname, int mac_header)
+int rx_packet(TEtherTubeNetfilter* self, void* packet, int packet_size,
+              const char* ifname, int mac_header, uint64_t rx_hwtstamp_ns)
 {
     int ret = 0;
     spin_lock((spinlock_t*)self->netfilterLock_);
@@ -279,7 +280,8 @@ int rx_packet(TEtherTubeNetfilter* self, void* packet, int packet_size, const ch
         return 1;
     }
 
-    switch (DispatchPacket(self->manager_ptr_, packet, packet_size, mac_header, self->nic_id))
+    switch (DispatchPacket(self->manager_ptr_, packet, packet_size, mac_header,
+                           self->nic_id, rx_hwtstamp_ns))
     {
         case DR_RTP_PACKET_USED:
             return 0; //NF_DROP;

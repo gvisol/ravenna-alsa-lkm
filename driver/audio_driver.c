@@ -105,6 +105,35 @@ static struct platform_device *g_device;
 static void *g_ravenna_peer;
 static struct alsa_ops *g_mr_alsa_audio_ops;
 
+/*
+ * A PTP-phase-locked capture tic is copied to ALSA immediately after this
+ * CLOCK_MONOTONIC snapshot is made.
+ * The value is exported read-only for timing diagnosis only; it is never used
+ * to schedule or filter audio.
+ */
+struct mr_alsa_capture_timing_snapshot
+{
+    bool valid;
+    uint64_t sac_start;
+    uint64_t monotonic_time_100us;
+    uint64_t performance_counter;
+    uint64_t estimated_ptp_time_100us;
+    int64_t ptp_to_monotonic_offset_100us;
+    uint64_t tic_base_period_ps;
+    uint64_t tic_current_period_ps;
+    uint16_t ptp_lock_pending;
+    uint16_t tic_lock_pending;
+    uint64_t last_sync_rx_hardware_timestamp_ns;
+    uint64_t last_sync_rx_monotonic_timestamp_ns;
+    uint64_t last_sync_origin_timestamp_ns;
+    bool system_tai_timeline;
+    uint32_t alsa_write_start;
+    uint32_t alsa_write_end;
+    uint32_t tic_frames;
+    uint32_t alsa_buffer_frames;
+    uint32_t sample_rate;
+};
+
 
 static int mr_alsa_audio_pcm_capture_copy_internal( struct snd_pcm_substream *substream,
                                             int channel, uint32_t pos,
@@ -184,6 +213,8 @@ struct mr_alsa_audio_chip
     atomic_t dma_playback_offset;
     atomic_t dma_capture_offset;
 
+    struct mr_alsa_capture_timing_snapshot capture_timing_snapshot;
+
     unsigned int pcm_playback_buffer_size;
     unsigned int pcm_capture_buffer_size;
 
@@ -208,6 +239,58 @@ struct mr_alsa_audio_chip
                                  const uint32_t channels,
                                  const uint32_t frames);
 };
+
+static struct mr_alsa_audio_chip *g_timing_chip;
+
+static int mr_alsa_capture_timing_get(char *buffer,
+                                      const struct kernel_param *kp)
+{
+    struct mr_alsa_capture_timing_snapshot snapshot = { 0 };
+    struct mr_alsa_audio_chip *chip = READ_ONCE(g_timing_chip);
+
+    if (!chip)
+        return scnprintf(buffer, PAGE_SIZE, "valid=0 reason=no-card\\n");
+
+    spin_lock_irq(&chip->capture_lock);
+    snapshot = chip->capture_timing_snapshot;
+    spin_unlock_irq(&chip->capture_lock);
+
+    return scnprintf(buffer, PAGE_SIZE,
+                     "valid=%u sac_start=%llu monotonic_time_100us=%llu "
+                     "performance_counter=%llu estimated_ptp_time_100us=%llu "
+                     "ptp_to_monotonic_offset_100us=%lld tic_base_period_ps=%llu "
+                     "tic_current_period_ps=%llu ptp_lock_pending=%u tic_lock_pending=%u "
+                     "last_sync_rx_hardware_timestamp_ns=%llu "
+                     "last_sync_rx_monotonic_timestamp_ns=%llu "
+                     "last_sync_origin_timestamp_ns=%llu "
+                     "system_tai_timeline=%u "
+                     "alsa_write_start=%u "
+                     "alsa_write_end=%u tic_frames=%u alsa_buffer_frames=%u "
+                     "sample_rate=%u\n",
+                     snapshot.valid, (unsigned long long)snapshot.sac_start,
+                     (unsigned long long)snapshot.monotonic_time_100us,
+                     (unsigned long long)snapshot.performance_counter,
+                     (unsigned long long)snapshot.estimated_ptp_time_100us,
+                     (long long)snapshot.ptp_to_monotonic_offset_100us,
+                     (unsigned long long)snapshot.tic_base_period_ps,
+                     (unsigned long long)snapshot.tic_current_period_ps,
+                     snapshot.ptp_lock_pending, snapshot.tic_lock_pending,
+                     (unsigned long long)snapshot.last_sync_rx_hardware_timestamp_ns,
+                     (unsigned long long)snapshot.last_sync_rx_monotonic_timestamp_ns,
+                     (unsigned long long)snapshot.last_sync_origin_timestamp_ns,
+                     snapshot.system_tai_timeline,
+                     snapshot.alsa_write_start, snapshot.alsa_write_end,
+                     snapshot.tic_frames, snapshot.alsa_buffer_frames,
+                     snapshot.sample_rate);
+}
+
+static const struct kernel_param_ops mr_alsa_capture_timing_ops = {
+    .get = mr_alsa_capture_timing_get,
+};
+
+module_param_cb(capture_timing_snapshot, &mr_alsa_capture_timing_ops, NULL, 0444);
+MODULE_PARM_DESC(capture_timing_snapshot,
+    "Read-only capture SAC, monotonic timestamp and PTP servo snapshot");
 
 
 /// channel mappings (NADAC only)
@@ -662,6 +745,76 @@ static int mr_alsa_audio_pcm_interrupt(void *rawchip, int direction)
 
             bytes_to_frame_factor = runtime->channels * chip->current_alsa_capture_stride;
 
+            if (chip->mr_alsa_audio_ops->get_global_times) {
+                struct mr_alsa_capture_timing_snapshot *snapshot =
+                    &chip->capture_timing_snapshot;
+                uint32_t write_start =
+                    (uint32_t)atomic_read(&chip->dma_capture_offset) /
+                    bytes_to_frame_factor;
+                uint32_t write_end = write_start + ptp_frame_size;
+
+                if (write_end >= runtime->buffer_size)
+                    write_end -= runtime->buffer_size;
+
+                /*
+                 * This is the current PTP tic.  The following interleave
+                 * writes its [sac_start, sac_start + tic_frames) range at
+                 * alsa_write_start in the DMA ring.
+                 */
+                chip->mr_alsa_audio_ops->get_global_times(
+                    chip->ravenna_peer, &snapshot->sac_start,
+                    &snapshot->monotonic_time_100us,
+                    &snapshot->performance_counter,
+                    &snapshot->ptp_to_monotonic_offset_100us,
+                    &snapshot->tic_base_period_ps,
+                    &snapshot->tic_current_period_ps,
+                    &snapshot->ptp_lock_pending,
+                    &snapshot->tic_lock_pending,
+                    &snapshot->last_sync_rx_hardware_timestamp_ns,
+                    &snapshot->last_sync_rx_monotonic_timestamp_ns,
+                    &snapshot->last_sync_origin_timestamp_ns);
+
+                /*
+                 * The live input jitter buffer is indexed by absolute SAC.
+                 * Do not let capture_buffer_pos free-run from the value sampled
+                 * in pcm_prepare(): prepare and the next PTP TIC are asynchronous,
+                 * and the PTP servo may also advance/re-align SAC by more than one
+                 * frame.  In both cases an independently incremented position no
+                 * longer identifies the samples described by snapshot->sac_start.
+                 *
+                 * Re-derive the read position at every TIC so the samples copied
+                 * below are exactly [sac_start, sac_start + tic_frames).  This is
+                 * a timeline/index correction only; it performs no latency
+                 * filtering and preserves genuine changes in the received stream.
+                */
+                chip->capture_buffer_pos =
+                    (uint32_t)(snapshot->sac_start % ring_buffer_size);
+
+                if (snapshot->ptp_to_monotonic_offset_100us >= 0) {
+                    const uint64_t offset =
+                        (uint64_t)snapshot->ptp_to_monotonic_offset_100us;
+                    snapshot->estimated_ptp_time_100us =
+                        offset > snapshot->monotonic_time_100us
+                            ? 0U
+                            : snapshot->monotonic_time_100us - offset;
+                } else {
+                    const uint64_t magnitude =
+                        (uint64_t)(-(snapshot->ptp_to_monotonic_offset_100us + 1)) + 1U;
+                    snapshot->estimated_ptp_time_100us =
+                        magnitude > ULLONG_MAX - snapshot->monotonic_time_100us
+                            ? ULLONG_MAX
+                            : snapshot->monotonic_time_100us + magnitude;
+                }
+                snapshot->alsa_write_start = write_start;
+                snapshot->alsa_write_end = write_end;
+                snapshot->tic_frames = ptp_frame_size;
+                snapshot->alsa_buffer_frames = runtime->buffer_size;
+                snapshot->sample_rate = runtime->rate;
+                snapshot->system_tai_timeline =
+                    ravenna_system_tai_timeline_enabled();
+                snapshot->valid = true;
+            }
+
             if (chip->capture_interleave_fn) {
                 chip->capture_interleave_fn(
                     chip->capture_buffer_channels_map,
@@ -1079,6 +1232,8 @@ static int mr_alsa_audio_pcm_prepare(struct snd_pcm_substream *substream)
             }
 
             atomic_set(&chip->dma_capture_offset, 0);
+            memset(&chip->capture_timing_snapshot, 0,
+                   sizeof(chip->capture_timing_snapshot));
             chip->dma_capture_buffer = runtime->dma_area;
             chip->pcm_capture_buffer_size = snd_pcm_lib_buffer_bytes(substream);
         }
@@ -2127,6 +2282,49 @@ static int mr_alsa_audio_pcm_close(struct snd_pcm_substream *substream)
     return 0;
 }
 
+/*
+ * The snapshot is captured under capture_lock immediately before a PTP tic
+ * advances the DMA ring. ALSA exposes that new hw_ptr at the tic instant;
+ * it must not be shifted one tic into the future. This reports diagnostics only;
+ * user space keeps its existing timestamp calculation during validation.
+ */
+static int mr_alsa_audio_pcm_capture_get_time_info(
+    struct snd_pcm_substream *substream,
+    struct timespec64 *system_ts,
+    struct timespec64 *audio_ts,
+    struct snd_pcm_audio_tstamp_config *audio_tstamp_config,
+    struct snd_pcm_audio_tstamp_report *audio_tstamp_report)
+{
+    struct mr_alsa_audio_chip *chip = snd_pcm_substream_chip(substream);
+    struct mr_alsa_capture_timing_snapshot snapshot = { 0 };
+    uint64_t audio_time_100us;
+
+    if (!chip || !system_ts || !audio_ts || !audio_tstamp_report)
+        return -EINVAL;
+
+    (void) audio_tstamp_config;
+    ktime_get_ts64(system_ts);
+
+    spin_lock_irq(&chip->capture_lock);
+    snapshot = chip->capture_timing_snapshot;
+    spin_unlock_irq(&chip->capture_lock);
+
+    if (!snapshot.valid || snapshot.sample_rate == 0)
+        return -EAGAIN;
+
+    audio_time_100us = snapshot.monotonic_time_100us;
+    audio_ts->tv_sec = div_u64(audio_time_100us, 10000ULL);
+    audio_ts->tv_nsec = (long) ((audio_time_100us % 10000ULL) * 100000ULL);
+
+    memset(audio_tstamp_report, 0, sizeof(*audio_tstamp_report));
+    audio_tstamp_report->valid = 1;
+    audio_tstamp_report->actual_type = SNDRV_PCM_AUDIO_TSTAMP_TYPE_LINK_SYNCHRONIZED;
+    /* No numerical accuracy claim: the validation data establishes it. */
+    audio_tstamp_report->accuracy_report = 0;
+
+    return 0;
+}
+
 /////////////////////////////////////////////////////////////////////////////////////
 static struct snd_pcm_ops mr_alsa_audio_pcm_playback_ops = {
     .open =     mr_alsa_audio_pcm_open,
@@ -2156,6 +2354,7 @@ static struct snd_pcm_ops mr_alsa_audio_pcm_capture_ops = {
     .prepare =  mr_alsa_audio_pcm_prepare,
     .trigger =  mr_alsa_audio_pcm_trigger,
     .pointer =  mr_alsa_audio_pcm_pointer,
+    .get_time_info = mr_alsa_audio_pcm_capture_get_time_info,
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0)
     .page =     snd_pcm_lib_get_vmalloc_page
 #endif
@@ -2472,6 +2671,8 @@ static int mr_alsa_audio_chip_probe(struct platform_device *devptr)
     if(err < 0)
         goto _err;
 
+    WRITE_ONCE(g_timing_chip, chip);
+
     // driver ID and name strings
     strscpy(card->driver, SND_MR_ALSA_AUDIO_DRIVER, sizeof(card->driver));
     strscpy(card->shortname, CARD_NAME, sizeof(card->shortname));
@@ -2518,6 +2719,7 @@ static void mr_alsa_audio_chip_remove(struct platform_device *devptr)
 {
     struct snd_card *card;
     card = platform_get_drvdata(devptr);
+    WRITE_ONCE(g_timing_chip, NULL);
     snd_card_free(card);
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 11, 0)
     return 0;

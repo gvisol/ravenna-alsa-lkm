@@ -70,6 +70,7 @@ static unsigned int nf_hook_func(void *priv, struct sk_buff *skb, const struct n
 {
     int err = 0, rc = 0;
     struct iphdr *ip_header = NULL;
+    uint64_t rx_hwtstamp_ns = 0;
     if (!skb)
     {
         printk(KERN_ALERT "sock buffer null\n");
@@ -105,16 +106,27 @@ static unsigned int nf_hook_func(void *priv, struct sk_buff *skb, const struct n
             return NF_ACCEPT;
         }
     }
+
+    /*
+     * Passive telemetry only.  ptp4l may configure the NIC to attach a
+     * hardware RX timestamp to PTP frames; preserve it through the existing
+     * netfilter path so PTP.c can report whether it is available.  A zero
+     * value means the kernel/NIC did not provide one for this packet.
+     */
+    rx_hwtstamp_ns = (uint64_t)ktime_to_ns(skb_hwtstamps(skb)->hwtstamp);
+
     const char* dev_name = "";
     if (state != NULL && state->in != NULL)
     {
         dev_name = state->in->name;
     }    
     if (skb_mac_header(skb) == skb_network_header(skb)) {
-        rc = nf_rx_packet(skb_network_header(skb) - ETH_HLEN, skb->len + ETH_HLEN, dev_name, 0);
+        rc = nf_rx_packet(skb_network_header(skb) - ETH_HLEN, skb->len + ETH_HLEN,
+                          dev_name, 0, rx_hwtstamp_ns);
     }
     else {
-        rc = nf_rx_packet(skb_mac_header(skb), skb->len + ETH_HLEN, dev_name, 1);
+        rc = nf_rx_packet(skb_mac_header(skb), skb->len + ETH_HLEN,
+                          dev_name, 1, rx_hwtstamp_ns);
     }
 
     switch (rc)
