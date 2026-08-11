@@ -9,6 +9,7 @@ BUTLER_PATCHER="$BUTLER_DIR/patch_curl_openssl4.py"
 BUTLER_VERSION="$BUTLER_DIR/VERSION"
 WEBAPP_SOURCE="$BUTLER_DIR/webapp"
 UNIT_SOURCE="$SCRIPT_DIR/systemd/merging-ravenna-butler.service"
+UNINSTALL_SOURCE="$SCRIPT_DIR/uninstall-persistent.sh"
 
 KERNEL_RELEASE="$(uname -r)"
 MODULE_TARGET="/lib/modules/$KERNEL_RELEASE/updates/merging-ravenna/MergingRavennaALSA.ko"
@@ -20,6 +21,7 @@ RUNTIME_ROOT=/opt/merging-ravenna
 RUNTIME_BUTLER="$RUNTIME_ROOT/Butler"
 RUNTIME_DAEMON="$RUNTIME_BUTLER/Merging_RAVENNA_Daemon.curl4"
 STATE_DIR=/var/lib/merging-ravenna-install
+UNINSTALL=/usr/local/sbin/uninstall-merging-ravenna
 
 IFACE=""
 START_NOW=0
@@ -50,7 +52,7 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [[ -d "/sys/class/net/$IFACE" ]] || die "no existe la interfaz $IFACE."
 
 for source_file in "$DRIVER_KO" "$BUTLER_ORIGINAL" "$BUTLER_PATCHER" \
-  "$BUTLER_VERSION" "$UNIT_SOURCE"; do
+  "$BUTLER_VERSION" "$UNIT_SOURCE" "$UNINSTALL_SOURCE"; do
   [[ -f "$source_file" ]] || die "falta $source_file."
 done
 [[ -d "$WEBAPP_SOURCE" ]] || die "falta $WEBAPP_SOURCE."
@@ -114,6 +116,7 @@ backup_once "$MODULE_TARGET" module
 backup_once "$MODULES_LOAD" modules_load
 backup_once "$UNIT" unit
 backup_once "$CONFIG" config
+backup_once "$UNINSTALL" uninstall
 
 install -m 0644 "$DRIVER_KO" "$MODULE_TARGET"
 printf 'MergingRavennaALSA\n' >"$MODULES_LOAD"
@@ -142,6 +145,7 @@ set_config_value default_sample_rate 48000
 ln -sfn "$CONFIG" "$RUNTIME_BUTLER/merging_ravenna_daemon.conf"
 
 install -m 0644 "$UNIT_SOURCE" "$UNIT"
+install -m 0755 "$UNINSTALL_SOURCE" "$UNINSTALL"
 depmod -a "$KERNEL_RELEASE"
 SELECTED_MODULE="$(modinfo -n MergingRavennaALSA 2>/dev/null || true)"
 [[ -n "$SELECTED_MODULE" &&
@@ -173,4 +177,4 @@ if lsmod | awk '{print $1}' | grep -qx MergingRavennaALSA; then
   fi
 fi
 
-echo "Rollback: sudo $SCRIPT_DIR/uninstall-persistent.sh"
+echo "Rollback: sudo $UNINSTALL"

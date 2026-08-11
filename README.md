@@ -284,7 +284,7 @@ booting that kernel into production.
 Rollback is explicit and does not unload an in-use kernel module:
 
 ```bash
-sudo ./uninstall-persistent.sh
+sudo /usr/local/sbin/uninstall-merging-ravenna
 sudo reboot
 ```
 

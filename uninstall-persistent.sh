@@ -8,6 +8,7 @@ UNIT=/etc/systemd/system/merging-ravenna-butler.service
 CONFIG=/etc/merging-ravenna/merging_ravenna_daemon.conf
 RUNTIME_ROOT=/opt/merging-ravenna
 STATE_DIR=/var/lib/merging-ravenna-install
+UNINSTALL=/usr/local/sbin/uninstall-merging-ravenna
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || {
   echo "ERROR: ejecutar con sudo/root." >&2
@@ -32,6 +33,7 @@ restore_one "$MODULE_TARGET" module
 restore_one "$MODULES_LOAD" modules_load
 restore_one "$UNIT" unit
 restore_one "$CONFIG" config
+restore_one "$UNINSTALL" uninstall
 
 if [[ -e "$STATE_DIR/runtime.owned" && "$RUNTIME_ROOT" == /opt/merging-ravenna ]]; then
   rm -rf -- "$RUNTIME_ROOT"
