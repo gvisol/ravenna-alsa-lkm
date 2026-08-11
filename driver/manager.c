@@ -1754,7 +1754,13 @@ int get_input_jitter_buffer_offset(void* user, uint32_t *offset)
     struct TManager* self = (struct TManager*)user;
     if (offset)
     {
-        *offset = get_live_in_jitter_buffer_offset(self, get_global_SAC(self));
+        uint64_t sac;
+        uint64_t global_time;
+        uint64_t performance_counter;
+
+        get_global_times(self, &sac, &global_time, &performance_counter);
+        *offset = get_live_in_jitter_buffer_offset(self, sac);
+        return 0;
     }
     return -EINVAL;
 }
